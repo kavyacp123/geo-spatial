@@ -139,3 +139,29 @@ The server verifies that all layer versions belong to the chosen metro and are v
 ```
 
 The analysis service returns/persists results with method name, parameter values, calculation version, warnings, and per-result provenance. It may never resolve an unspecified layer “latest” during a run.
+
+## Implemented endpoints (2026-09-19, all behind `/api/v1`, Node BFF proxies to analysis)
+
+Score responses now persist when PostGIS is up and return `persisted: true` with
+database-backed `candidate_id` / `analysis_run_id` (ephemeral UUIDs otherwise —
+a score never 500s for provenance). New optional score fields: `candidate_id`,
+`candidate_name` (reused when the id exists, else a boundary-checked insert).
+
+| Method + path | Purpose | Key validation |
+|---|---|---|
+| `POST /scores` | Score a pin (PostGIS factors → fallback demo) | profile known, weights Σ 1.0 ±0.0001, coords in range |
+| `GET /layers` | Layer catalog with counts + extents | — |
+| `GET /layers/{id}/versions/{v}` | Version manifest + quality report | 404 unknown |
+| `GET /layers/{id}/features?bbox=&limit=` | Viewport GeoJSON (≤500) | bbox `minx,miny,maxx,maxy` |
+| `POST /layers` | Ingest GeoJSON/WKT (validated, versioned) | kind enum, Gujarat bbox, ≤25MB |
+| `POST /layers/upload` | Ingest `.zip` Shapefile (fiona) / GeoTIFF (rasterio) | 501 with message when GDAL missing |
+| `POST /candidates`, `GET /candidates` | Persist / list candidate pins | inside study boundary (422) |
+| `GET /analysis-runs/{id}` | Run + its site_scores | 404 unknown |
+| `POST /hotspots` | sklearn DBSCAN (haversine) over profile-relevant POIs | profile known; 503 no DB; 501 no sklearn |
+| `POST /h3` | Real h3 cells (res 3–7, default 5) blended from layer aggregates, persisted to `analysis_cell` | 422 over cell cap 2000 / bad res |
+| `POST /isochrone` | OSRM table-API drive rings + reachable population, geodesic fallback | minutes 1–120; always labeled `routed` bool + provider |
+| `POST /reports` | Assemble cross-run report from persisted site_scores | 404 on missing pair |
+
+`flood_zone` (warn) is auto-appended when a pin falls inside a risk polygon, so
+constraints are discovered — not only echoed — while client-supplied
+`triggered_constraints` keep working for policy overrides.

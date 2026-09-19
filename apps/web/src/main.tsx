@@ -3,8 +3,10 @@ import { createRoot } from 'react-dom/client';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import maplibregl from 'maplibre-gl';
 import './styles.css';
-import { H3_DEMO, HOTSPOTS_DEMO, UNDERSERVED_DEMO, RAW_DEMO, circlePolygon } from './demo';
+import { H3_DEMO, UNDERSERVED_DEMO, RAW_DEMO, circlePolygon, hotspotsForProfile, poiForProfile, poiRelevance, POI_LENS, RELEVANT_THRESHOLD } from './demo';
 import { buildReportHtml, openReport, toCsv } from './report';
+import { fetchCatalog, fetchFeatures, fetchHotspots, fetchH3, fetchIsochrone, postServerReport, uploadLayer, downloadJSON } from './livedata';
+import type { FC, IsoResult } from './livedata';
 
 type Factor = { id: string; label: string; weight: number; layerKind: string };
 type Profile = { id: string; label: string; summary: string; factors: Factor[]; constraints: string[] };
@@ -25,6 +27,7 @@ type ScoreResponse = {
   eligibility: string;
   score_config_version: number;
   weight_source: string;
+  persisted?: boolean;
   factors: ScoreFactor[];
   constraints: { id: string; effect: string; message: string }[];
   input_manifest: { study_area: string; notice: string; weights: Record<string, number> };
@@ -97,6 +100,10 @@ function initialProfile(): string {
   return q && q.length > 0 ? q : 'fmcg_retail';
 }
 
+function styleKeyOf(b: Basemap, t: string): string {
+  return b === 'osm' ? 'osm' : t === 'light' ? 'light' : 'dark';
+}
+
 function orbClass(score: number | null, eligibility: string, scoring: boolean): string {
   if (scoring) return 'orb scoring';
   if (score === null) return 'orb';
@@ -119,11 +126,12 @@ function ensureDemoLayers(map: maplibregl.Map) {
   const add = () => {
     if (!map.isStyleLoaded()) return;
     if (!map.getSource('h3')) map.addSource('h3', { type: 'geojson', data: H3_DEMO as unknown as GeoJSON.FeatureCollection });
-    if (!map.getSource('hotspots')) map.addSource('hotspots', { type: 'geojson', data: HOTSPOTS_DEMO as unknown as GeoJSON.FeatureCollection });
+    if (!map.getSource('hotspots')) map.addSource('hotspots', { type: 'geojson', data: hotspotsForProfile(initialProfile()) as unknown as GeoJSON.FeatureCollection });
     if (!map.getSource('underserved')) map.addSource('underserved', { type: 'geojson', data: UNDERSERVED_DEMO as unknown as GeoJSON.FeatureCollection });
     for (const k of RAW_KINDS) {
       const id = `raw-${k}`;
-      if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: (RAW_DEMO[k] as unknown as GeoJSON.FeatureCollection) ?? { type: 'FeatureCollection', features: [] } });
+      const data = k === 'poi' ? poiForProfile(initialProfile()) : RAW_DEMO[k];
+      if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: (data as unknown as GeoJSON.FeatureCollection) ?? { type: 'FeatureCollection', features: [] } });
     }
     if (!map.getSource('draw')) map.addSource('draw', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
     if (!map.getSource('isochrones')) map.addSource('isochrones', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -141,7 +149,7 @@ function ensureDemoLayers(map: maplibregl.Map) {
     if (!map.getLayer('h3-outline')) map.addLayer({ id: 'h3-outline', type: 'line', source: 'h3', paint: { 'line-color': 'rgba(255,255,255,0.16)', 'line-width': 0.8, 'line-opacity': 0.9 } });
     if (!map.getLayer('underserved-fill')) map.addLayer({ id: 'underserved-fill', type: 'fill', source: 'underserved', paint: { 'fill-color': 'rgba(45,212,167,0.10)', 'fill-opacity': 0.9 } });
     if (!map.getLayer('underserved-outline')) map.addLayer({ id: 'underserved-outline', type: 'line', source: 'underserved', paint: { 'line-color': '#2dd4a7', 'line-width': 1.8, 'line-dasharray': [4, 3], 'line-opacity': 0.95 } });
-    if (!map.getLayer('hotspots-halo')) map.addLayer({ id: 'hotspots-halo', type: 'circle', source: 'hotspots', paint: { 'circle-radius': 18, 'circle-color': '#ff5d3a', 'circle-opacity': 0.16, 'circle-blur': 0.4 } });
+    if (!map.getLayer('hotspots-halo')) map.addLayer({ id: 'hotspots-halo', type: 'circle', source: 'hotspots', paint: { 'circle-radius': ['interpolate', ['linear'], ['coalesce', ['get', 'weight'], 1], 1, 12, 6, 26], 'circle-color': '#ff5d3a', 'circle-opacity': 0.16, 'circle-blur': 0.4 } });
     if (!map.getLayer('hotspots-core')) map.addLayer({ id: 'hotspots-core', type: 'circle', source: 'hotspots', paint: { 'circle-radius': 6.5, 'circle-color': '#ff5d3a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1.4, 'circle-opacity': 0.95 } });
     if (!map.getLayer('raw-demographics-fill')) {
       map.addLayer({ id: 'raw-demographics-fill', type: 'fill', source: 'raw-demographics', paint: { 'fill-color': '#2dd4a7', 'fill-opacity': 0.24 } });
@@ -153,7 +161,7 @@ function ensureDemoLayers(map: maplibregl.Map) {
         id: 'raw-poi-circle',
         type: 'circle',
         source: 'raw-poi',
-        paint: { 'circle-radius': 5, 'circle-color': ['match', ['get', 'kind'], 'competitor', '#ff5d3a', 'complementary', '#f5b942', '#7c8cff'], 'circle-stroke-color': '#06110d', 'circle-stroke-width': 1, 'circle-opacity': 0.95 },
+        paint: { 'circle-radius': ['interpolate', ['linear'], ['coalesce', ['get', 'relevance'], 1], 0, 3, 1, 6], 'circle-color': ['match', ['get', 'kind'], 'competitor', '#ff5d3a', 'complementary', '#f5b942', '#7c8cff'], 'circle-stroke-color': '#06110d', 'circle-stroke-width': 1, 'circle-opacity': ['*', ['coalesce', ['get', 'relevance'], 1], 0.95] },
       });
     }
     if (!map.getLayer('raw-landuse-fill')) {
@@ -235,11 +243,29 @@ function App() {
   const [searchPoly, setSearchPoly] = useState<GeoJSON.Feature<GeoJSON.Polygon> | null>(null);
   const [iso, setIso] = useState<Record<number, boolean>>({ 10: true, 20: false, 30: false });
   const [compare, setCompare] = useState<Array<{ key: string; label: string; coords: Coords; data: ScoreResponse }>>([]);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapTick, setMapTick] = useState(0);
+  // live PostGIS state — null means "fall back to demo.ts"; liveOk drives the legend badge
+  const [liveOk, setLiveOk] = useState(false);
+  const [livePoiRaw, setLivePoiRaw] = useState<FC | null>(null);
+  const [liveRaw, setLiveRaw] = useState<Partial<Record<string, FC>>>({});
+  const [liveH3, setLiveH3] = useState<FC | null>(null);
+  const [liveHot, setLiveHot] = useState<FC | null>(null);
+  const [serverIso, setServerIso] = useState<IsoResult | null>(null);
+  const [isoRouting, setIsoRouting] = useState(false);
+  const [catalogSeq, setCatalogSeq] = useState(0);
+  const [upKind, setUpKind] = useState<string>('poi');
+  const [upName, setUpName] = useState('');
+  const [upMode, setUpMode] = useState<'file' | 'geojson' | 'wkt'>('file');
+  const [upText, setUpText] = useState('');
+  const [upMsg, setUpMsg] = useState<string | null>(null);
+  const [upBusy, setUpBusy] = useState(false);
   const animatedScore = useCountUp(scoreData?.score ?? null, 900);
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
+  const styleKeyRef = useRef<string | null>(null);
   // refs to avoid stale closure in map click
   const weightsRef = useRef(weights);
   const idRef = useRef(id);
@@ -289,6 +315,7 @@ function App() {
 
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return;
+    styleKeyRef.current = styleKeyOf(basemap, theme);
     const initStyle = basemap === 'osm' ? osmStyle() : theme === 'light' ? LIGHT_STYLE : DARK_STYLE;
     const map = new maplibregl.Map({
       container: mapEl.current,
@@ -298,8 +325,8 @@ function App() {
       attributionControl: { compact: true },
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-    map.on('load', () => ensureDemoLayers(map));
-    map.on('styledata', () => ensureDemoLayers(map));
+    map.on('load', () => { ensureDemoLayers(map); setMapReady(true); });
+    map.on('styledata', () => { ensureDemoLayers(map); setMapTick((t) => t + 1); });
     map.on('click', (e) => {
       if (drawActiveRef.current) {
         const cur = drawVertsRef.current ?? [];
@@ -326,9 +353,106 @@ function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    // Never re-request the style that's already showing: redundant setStyle calls
+    // abort in-flight loads and can strand the canvas blank until a full refresh.
+    const key = styleKeyOf(basemap, theme);
+    if (styleKeyRef.current === key) return;
+    styleKeyRef.current = key;
     const style = basemap === 'osm' ? osmStyle() : theme === 'light' ? LIGHT_STYLE : DARK_STYLE;
-    map.setStyle(style as unknown as string);
+    // diff:false — full reload. Diffing across basemap styles is a known blank-canvas
+    // hazard (custom layers torn down mid-diff); our styledata handler re-adds everything.
+    map.setStyle(style as unknown as string, { diff: false });
   }, [basemap, theme]);
+
+  // live catalog: layer ids per kind, then features — null keeps demo.ts fallbacks
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const cat = await fetchCatalog(API);
+      if (!live) return;
+      if (!cat) { setLiveOk(false); return; }
+      setLiveOk(true);
+      const byKind: Record<string, string> = {};
+      for (const l of cat) if (!byKind[l.kind]) byKind[l.kind] = l.id;
+      const raw: Partial<Record<string, FC>> = {};
+      let poi: FC | null = null;
+      await Promise.all(
+        (['demographics', 'transport', 'poi', 'land_use', 'environmental_risk'] as const).map(async (k) => {
+          const lid = byKind[k];
+          if (!lid) return;
+          const fc = await fetchFeatures(API, lid);
+          if (!live || !fc) return;
+          if (k === 'poi') poi = fc;
+          else raw[k] = fc;
+        }),
+      );
+      if (!live) return;
+      setLivePoiRaw(poi);
+      setLiveRaw(raw);
+    })();
+    return () => { live = false; };
+  }, [catalogSeq]);
+
+  // server H3 per product (default weights; lens note in legend) — null keeps demo honeycomb
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const h3 = await fetchH3(API, id);
+      if (live) setLiveH3(h3);
+    })();
+    return () => { live = false; };
+  }, [id]);
+
+  // server hotspots per product — null keeps demo-derived circles
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const h = await fetchHotspots(API, id);
+      if (live) setLiveHot(h);
+    })();
+    return () => { live = false; };
+  }, [id]);
+
+  // relevance-stamped POIs: live features when PostGIS is up, demo points otherwise
+  const stampedPoi = useMemo<FC>(() => {
+    const base = livePoiRaw ?? poiForProfile(id);
+    return {
+      type: 'FeatureCollection',
+      features: base.features.map((f) => {
+        const props = (f.properties ?? {}) as Record<string, unknown>;
+        return {
+          ...f,
+          properties: {
+            ...props,
+            relevance: poiRelevance(id, String(props.category ?? props.kind ?? ''), String(props.sub ?? '')),
+          },
+        };
+      }),
+    } as FC;
+  }, [livePoiRaw, id]);
+  const effHot = useMemo<FC>(() => liveHot ?? hotspotsForProfile(id), [liveHot, id]);
+  const effH3 = useMemo<FC>(() => liveH3 ?? H3_DEMO, [liveH3]);
+
+  // profile lens: interest points + derived hotspot circles follow the selected product
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m || !mapReady) return;
+    if (m.getSource('hotspots')) (m.getSource('hotspots') as maplibregl.GeoJSONSource).setData(effHot as unknown as GeoJSON.FeatureCollection);
+    if (m.getSource('raw-poi')) (m.getSource('raw-poi') as maplibregl.GeoJSONSource).setData(stampedPoi as unknown as GeoJSON.FeatureCollection);
+    if (m.getSource('h3')) (m.getSource('h3') as maplibregl.GeoJSONSource).setData(effH3 as unknown as GeoJSON.FeatureCollection);
+    for (const k of ['demographics', 'transport', 'land_use', 'environmental_risk'] as const) {
+      const src = m.getSource(`raw-${k}`);
+      const fc = liveRaw[k] ?? (RAW_DEMO[k] as unknown as FC);
+      if (src && fc) (src as maplibregl.GeoJSONSource).setData(fc as unknown as GeoJSON.FeatureCollection);
+    }
+  }, [id, mapReady, mapTick, liveHot, liveH3, livePoiRaw, liveRaw, stampedPoi, effHot, effH3]);
+
+  const lensInfo = useMemo(() => {
+    const rel = stampedPoi.features.filter((f) => (((f.properties ?? {}) as Record<string, unknown>).relevance as number ?? 0) >= RELEVANT_THRESHOLD).length;
+    const clusters = effHot.features.length;
+    const lens = POI_LENS[id];
+    return { rel, total: stampedPoi.features.length, clusters, blurb: lens?.blurb ?? '' };
+  }, [id, stampedPoi, effHot]);
 
   // draw source sync
   useEffect(() => {
@@ -341,7 +465,24 @@ function App() {
     (m.getSource('draw') as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features: feats } as unknown as GeoJSON.FeatureCollection);
   }, [drawVerts, searchPoly]);
 
-  // isochrone sync — geodesic circles, metres internally
+  // server isochrones per pin (OSRM routed + reachable population), null keeps geodesic demo
+  useEffect(() => {
+    if (!coords) { setServerIso(null); return; }
+    let live = true;
+    setIsoRouting(true);
+    (async () => {
+      const r = await fetchIsochrone(API, coords.lng, coords.lat, [10, 20, 30]);
+      if (live) { setServerIso(r); setIsoRouting(false); }
+    })();
+    return () => { live = false; };
+  }, [coords]);
+
+  const popFor = (m: number): number | null => {
+    const r = serverIso?.rings.find((x) => x.minutes === m);
+    return r && typeof r.population === 'number' ? Math.round(r.population) : null;
+  };
+
+  // isochrone map sync — routed polygons when the server answers, else geodesic circles
   useEffect(() => {
     const m = mapRef.current;
     if (!m || !m.getSource('isochrones')) return;
@@ -350,14 +491,25 @@ function App() {
       return;
     }
     const feats: GeoJSON.Feature[] = [];
-    for (const min of ISO_MIN) {
-      if (!iso[min]) continue;
-      const poly = circlePolygon([coords.lng, coords.lat], ISO_CFG[min].radius);
-      (poly.properties as Record<string, unknown>)['minutes'] = min;
-      feats.push(poly as unknown as GeoJSON.Feature);
+    if (serverIso) {
+      for (const r of serverIso.rings) {
+        if (!iso[r.minutes]) continue;
+        feats.push({
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [r.polygon] },
+          properties: { minutes: r.minutes, routed: r.routed, population: r.population ?? null },
+        });
+      }
+    } else {
+      for (const min of ISO_MIN) {
+        if (!iso[min]) continue;
+        const poly = circlePolygon([coords.lng, coords.lat], ISO_CFG[min].radius);
+        (poly.properties as Record<string, unknown>)['minutes'] = min;
+        feats.push(poly as unknown as GeoJSON.Feature);
+      }
     }
     (m.getSource('isochrones') as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features: feats } as unknown as GeoJSON.FeatureCollection);
-  }, [coords, iso]);
+  }, [coords, iso, serverIso]);
 
   // keyboard ESC to cancel draw
   useEffect(() => {
@@ -402,10 +554,12 @@ function App() {
     // isochrones stay visible; per-minute filtering is data-driven
     if (m.getLayer('raw-demographics-fill')) m.setPaintProperty('raw-demographics-fill', 'fill-opacity', rawOp.demographics * 0.55);
     if (m.getLayer('raw-transport-line')) m.setPaintProperty('raw-transport-line', 'line-opacity', rawOp.transport);
-    if (m.getLayer('raw-poi-circle')) m.setPaintProperty('raw-poi-circle', 'circle-opacity', rawOp.poi);
+    if (m.getLayer('raw-poi-circle')) m.setPaintProperty('raw-poi-circle', 'circle-opacity', ['*', ['coalesce', ['get', 'relevance'], 1], rawOp.poi] as unknown as number);
     if (m.getLayer('raw-landuse-fill')) m.setPaintProperty('raw-landuse-fill', 'fill-opacity', rawOp.land_use);
     if (m.getLayer('raw-risk-fill')) m.setPaintProperty('raw-risk-fill', 'fill-opacity', rawOp.environmental_risk * 0.45);
-  }, [showH3, showHotspots, showUnderserved, rawVis, rawOp, basemap]);
+    // NOTE: theme + mapTick are deps on purpose — every setStyle wipes custom layers,
+    // so toggles/opacity must re-apply once the new style finishes loading.
+  }, [showH3, showHotspots, showUnderserved, rawVis, rawOp, basemap, theme, mapTick]);
 
   const profile = useMemo(() => profiles.find((p) => p.id === id) ?? null, [profiles, id]);
 
@@ -474,6 +628,7 @@ function App() {
       setScoreData(data as ScoreResponse);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      setScoreData(null); // never show a previous pin's score as if it belonged to this one
       setErr(msg.includes('failed to fetch') ? 'Analysis service is offline. Start the analysis container.' : msg);
     } finally {
       setScoring(false);
@@ -539,6 +694,30 @@ function App() {
     setDrawActive(false);
   }
 
+  async function submitUpload(e: React.FormEvent) {
+    e.preventDefault();
+    if (upBusy) return;
+    setUpBusy(true);
+    setUpMsg(null);
+    const fileInput = document.getElementById('up-file') as HTMLInputElement | null;
+    const file = fileInput?.files?.[0] ?? null;
+    const r = await uploadLayer(API, {
+      kind: upKind,
+      name: upName.trim() || `${upKind} upload ${new Date().toISOString().slice(0, 10)}`,
+      sourceName: 'user upload',
+      file,
+      geojsonText: upMode === 'geojson' ? upText : undefined,
+      wktText: upMode === 'wkt' ? upText : undefined,
+    });
+    setUpMsg((r.ok ? '✓ ' : '✕ ') + r.message);
+    setUpBusy(false);
+    if (r.ok) {
+      if (fileInput) fileInput.value = '';
+      setUpText('');
+      setCatalogSeq((s) => s + 1); // refresh live layers
+    }
+  }
+
   function pinCurrent() {
     if (!coords || !scoreData) return;
     if (compare.length >= 3) return;
@@ -554,8 +733,20 @@ function App() {
     markerRef.current?.remove();
     markerRef.current = new maplibregl.Marker({ color: '#f5b942' }).setLngLat([crd.lng, crd.lat]).addTo(mapRef.current!);
   }
-  function exportCompare() {
+  async function exportCompare() {
     if (compare.length === 0) return;
+    // authoritative server report first (persisted runs + deltas); client payload offline
+    const server = await postServerReport(
+      API,
+      compare.map((s) => ({ analysis_run_id: s.data.analysis_run_id, candidate_site_id: s.data.candidate_id })),
+    );
+    if (server) {
+      downloadJSON(`geoready-report-${id}-${new Date().toISOString().slice(0, 10)}.json`, {
+        ...server,
+        search_polygon: searchPoly ? searchPoly.geometry.coordinates : null,
+      });
+      return;
+    }
     const payload = {
       study_area: 'Gujarat',
       profile: id,
@@ -749,23 +940,36 @@ function App() {
             )}
           </p>
 
-          <h2>Catchments · 10 / 20 / 30 min · DEMO</h2>
-          <p className="lede">Geodesic circles (metres internally) at ~40 km/h drive proxy. Not a routed isochrone — labeled DEMO.</p>
+          <h2>Catchments · 10 / 20 / 30 min · {serverIso ? (serverIso.routed ? 'ROUTED OSRM' : 'DEMO') : isoRouting ? 'ROUTING…' : 'DEMO'}</h2>
+          <p className="lede">
+            {serverIso?.routed
+              ? 'Routed drive-time polygons via OSRM (driving) with reachable population from demographics.'
+              : 'Geodesic circles (metres internally) at ~40 km/h drive proxy. Not a routed isochrone — labeled DEMO.'}
+          </p>
           <div className="catchments">
-            {ISO_MIN.map((m) => (
-              <label key={m} className="catch-row">
-                <input type="checkbox" checked={!!iso[m]} onChange={(e) => setIso((p) => ({ ...p, [m]: e.target.checked }))} aria-label={`${m} min catchment`} />
-                <span className="swatch" style={{ background: ISO_CFG[m].color }} />
-                <span>
-                  {m} min
-                </span>
-                <span>{ISO_CFG[m].label}</span>
-              </label>
-            ))}
+            {ISO_MIN.map((m) => {
+              const pop = popFor(m);
+              return (
+                <label key={m} className="catch-row">
+                  <input type="checkbox" checked={!!iso[m]} onChange={(e) => setIso((p) => ({ ...p, [m]: e.target.checked }))} aria-label={`${m} min catchment`} />
+                  <span className="swatch" style={{ background: ISO_CFG[m].color }} />
+                  <span>
+                    {m} min
+                  </span>
+                  <span>{pop !== null ? `~${pop.toLocaleString()} people` : ISO_CFG[m].label}</span>
+                </label>
+              );
+            })}
           </div>
-          <p className="detail-meta">Drop a pin, then toggle rings. Rings redraw geodesic every move. Clearly badged DEMO CATCHMENT in the map and in exports.</p>
+          <p className="detail-meta">
+            {isoRouting
+              ? 'Routing via OSRM… rings upgrade when the drive times arrive.'
+              : serverIso?.routed
+                ? 'Routed rings with population reachable — part of the score evidence and exports.'
+                : 'Drop a pin, then toggle rings. Rings redraw every move. Clearly badged DEMO CATCHMENT in the map and in exports.'}
+          </p>
 
-          <h2>Map layers · synthetic demo</h2>
+          <h2>Map layers · {liveOk ? 'live PostGIS' : 'synthetic demo'}</h2>
           <div className="layers">
             <div className="layer-row">
               <div className="layer-head">
@@ -773,7 +977,7 @@ function App() {
                   {showH3 ? '⬢' : '○'}
                 </button>
                 <span className="kind">H3 suitability · hex aggregation</span>
-                <span className="badge">DEMO</span>
+                <span className="badge">{liveH3 ? 'LIVE' : 'DEMO'}</span>
               </div>
             </div>
             <div className="layer-row">
@@ -782,7 +986,7 @@ function App() {
                   {showHotspots ? '◉' : '○'}
                 </button>
                 <span className="kind">DBSCAN hotspots · dense clusters</span>
-                <span className="badge">DEMO</span>
+                <span className="badge">{liveHot ? 'LIVE' : 'DEMO'}</span>
               </div>
             </div>
             <div className="layer-row">
@@ -807,12 +1011,38 @@ function App() {
                     {rawVis[k] ? '👁' : '—'}
                   </button>
                   <span className="kind">{k.replace('_', ' ')}</span>
-                  <span className="badge">SYNTH</span>
+                  <span className="badge">{liveRaw[k] ? 'LIVE' : 'SYNTH'}</span>
                 </div>
                 <input type="range" min={0} max={1} step={0.05} value={rawOp[k]} onChange={(e) => setRawOp((p) => ({ ...p, [k]: Number(e.target.value) }))} aria-label={`${k} opacity`} />
               </div>
             ))}
           </div>
+
+          <details className="layers" style={{ marginTop: 8 }}>
+            <summary className="lede" style={{ cursor: 'pointer' }}>Upload a layer · GeoJSON / WKT / .zip Shapefile / GeoTIFF</summary>
+            <form className="layer-row" onSubmit={submitUpload}>
+              <div className="layer-head">
+                <select value={upKind} onChange={(e) => setUpKind(e.target.value)} aria-label="Layer kind" style={{ background: 'var(--panel-2)', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 8px', fontSize: 12 }}>
+                  {['demographics', 'transport', 'poi', 'land_use', 'environmental_risk', 'utilities'].map((k) => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+                <input value={upName} onChange={(e) => setUpName(e.target.value)} placeholder="Layer name" aria-label="Layer name" style={{ flex: 1, background: 'var(--panel-2)', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 8, padding: '6px 8px', fontSize: 12 }} />
+              </div>
+              <div className="segmented" role="group" aria-label="Upload mode" style={{ alignSelf: 'flex-start' }}>
+                {(['file', 'geojson', 'wkt'] as const).map((m) => (
+                  <button key={m} type="button" aria-pressed={upMode === m} onClick={() => setUpMode(m)}>{m === 'file' ? 'File' : m.toUpperCase()}</button>
+                ))}
+              </div>
+              {upMode === 'file' ? (
+                <input id="up-file" type="file" accept=".geojson,.json,.zip,.tif,.tiff,.geotiff" aria-label="Layer file" style={{ fontSize: 12, color: 'var(--muted)' }} />
+              ) : (
+                <textarea value={upText} onChange={(e) => setUpText(e.target.value)} placeholder={upMode === 'geojson' ? '{"type":"FeatureCollection","features":[]}' : 'POINT(72.58 23.02)'} rows={3} aria-label="Layer text" style={{ background: 'var(--panel-2)', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 8, padding: 8, fontSize: 11, fontFamily: 'var(--font-mono)' }} />
+              )}
+              <button type="submit" className="btn primary" disabled={upBusy}>{upBusy ? 'Uploading…' : 'Ingest → PostGIS'}</button>
+              {upMsg && <p className="lede" style={{ fontSize: 11 }}>{upMsg}</p>}
+            </form>
+          </details>
 
           <button type="button" className="studio-toggle" onClick={() => setWeightsOpen((v) => !v)} aria-expanded={weightsOpen} aria-controls="studio-panel">
             <span>Weight studio · Σ {sum.toFixed(3)} {sumOk ? '✓' : '— must be 1.000'}</span>
@@ -875,7 +1105,7 @@ function App() {
             )}
           </div>
           <div className="legend" aria-label="Map legend">
-            <strong>LEGEND · CLICK TO TOGGLE · SYNTH DEMO</strong>
+            <strong>LEGEND · {liveOk ? 'LIVE POSTGIS' : 'SYNTH DEMO'}</strong>
             <button type="button" className={showH3 ? 'active' : ''} onClick={() => setShowH3((v) => !v)}>
               <i style={{ background: '#f5b942' }} />
               H3 high-potential
@@ -893,13 +1123,16 @@ function App() {
             </button>
             <button type="button" className={showHotspots ? 'active' : ''} onClick={() => setShowHotspots((v) => !v)}>
               <i style={{ background: '#ff5d3a' }} />
-              DBSCAN hotspot
+              Hotspots · {lensInfo.clusters} clusters
               <span className="pct">{showHotspots ? 'ON' : 'OFF'}</span>
             </button>
             <button type="button" onClick={() => handlePick(23.02, 72.58, false)}>
               <i style={{ background: '#2dd4a7' }} />
               Candidate pin
             </button>
+            <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'var(--font-mono)', lineHeight: 1.5 }}>
+              {lensInfo.rel} of {lensInfo.total} POIs matter for {profile?.label ?? id} — {lensInfo.blurb}
+            </span>
             {searchPoly && (
               <button type="button" onClick={clearPoly}>
                 <i style={{ background: '#f5b942', border: '2px dashed #f5b942' }} />
@@ -907,7 +1140,11 @@ function App() {
                 <span className="pct">CLEAR</span>
               </button>
             )}
-            {(iso[10] || iso[20] || iso[30]) && <span style={{ fontSize: 10, color: 'var(--gold)', fontFamily: 'var(--font-mono)' }}>DEMO CATCHMENTS — geodesic, not routed</span>}
+            {(iso[10] || iso[20] || iso[30]) && (
+              <span style={{ fontSize: 10, color: 'var(--gold)', fontFamily: 'var(--font-mono)' }}>
+                {serverIso?.routed ? `ROUTED OSRM · pop ${[10, 20, 30].filter((m) => iso[m]).map((m) => `${m}m:${((popFor(m) ?? 0) / 1000).toFixed(0)}k`).join(' ')}` : 'DEMO CATCHMENTS — geodesic, not routed'}
+              </span>
+            )}
           </div>
         </section>
 

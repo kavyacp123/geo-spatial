@@ -16,7 +16,11 @@ services:
       retries: 10
   analysis:
     build: ./services/analysis
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://geoready:geoready@db:5432/geoready}
     ports: ["8000:8000"]
+    depends_on:
+      db: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s

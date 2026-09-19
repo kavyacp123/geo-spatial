@@ -41,6 +41,18 @@ For each layer, document coverage, date, provider, license, CRS, refresh expecta
 
 Start with a business question, not the map: “We need a new retail site that reaches high demand, has road access, avoids risky zoning, and is not crowded by competitors.” Then show the candidate score, open the breakdown, toggle evidence layers, compare an alternative, and export the evidence. Close with the technical differentiator: a versioned, explainable score rather than a black-box recommendation.
 
+## Implementation status (2026-09-19 — verified live via `docker compose`)
+
+Rows 1–6 done and demonstrated: Gujarat boundary + six seeded layers (demographics,
+transport, POI, land-use, risk, utilities) with counts/attribution; deterministic
+score engine with a known-breakdown fixture; PostGIS factor queries + persisted
+runs/candidates/scores; map UX with compare tray; server H3 (1690 cells, res 5)
++ sklearn DBSCAN hotspots; report/JSON/CSV export + one-command seed. Row 7
+partial: OSRM drive-time catchments + reachable population are live (routed,
+labeled, cached, geodesic fallback); Getis-Ord Gi* remains stretch. Real-data
+scripts (`scripts/fetch_osm.py`, `scripts/fetch_worldpop.py`) cover OSM/WorldPop
+sourcing with synthetic fallback so judging never depends on the network.
+
 ## Do not compromise on
 
 - Visible data source/quality caveats.
