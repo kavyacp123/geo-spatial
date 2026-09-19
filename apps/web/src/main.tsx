@@ -36,6 +36,29 @@ type ScoreResponse = {
 const API = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
 const GUJARAT_CENTER: [number, number] = [72.5714, 23.0225];
 const DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+const LIGHT_STYLE = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
+
+function useCountUp(target: number | null, duration = 900): number {
+  const [val, setVal] = useState(0);
+  const fromRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (target === null || target === undefined) { setVal(0); fromRef.current = 0; return; }
+    const from = fromRef.current;
+    const to = target;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setVal(from + (to - from) * eased);
+      if (p < 1) rafRef.current = requestAnimationFrame(tick);
+      else fromRef.current = to;
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [target, duration]);
+  return val;
+}
 
 const SEEDED: { id: string; label: string; coords: [number, number]; note: string }[] = [
   { id: 'sg-highway', label: 'Ahmedabad — SG Highway', coords: [72.505, 23.033], note: 'Highway retail cluster' },
@@ -186,6 +209,18 @@ function App() {
   const [basemap, setBasemap] = useState<Basemap>('dark');
   const [entered, setEntered] = useState(false);
   const [coords, setCoords] = useState<Coords | null>(null);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try {
+      const s = localStorage.getItem('geoready-theme');
+      if (s === 'light' || s === 'dark') return s as 'dark' | 'light';
+    } catch {
+      void 0;
+    }
+    return 'dark';
+  });
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [weightsOpen, setWeightsOpen] = useState(true);
   const [scoreData, setScoreData] = useState<ScoreResponse | null>(null);
   const [scoring, setScoring] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -200,6 +235,7 @@ function App() {
   const [searchPoly, setSearchPoly] = useState<GeoJSON.Feature<GeoJSON.Polygon> | null>(null);
   const [iso, setIso] = useState<Record<number, boolean>>({ 10: true, 20: false, 30: false });
   const [compare, setCompare] = useState<Array<{ key: string; label: string; coords: Coords; data: ScoreResponse }>>([]);
+  const animatedScore = useCountUp(scoreData?.score ?? null, 900);
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -230,6 +266,15 @@ function App() {
   }, [coords]);
 
   useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('geoready-theme', theme);
+    } catch {
+      void 0;
+    }
+  }, [theme]);
+
+  useEffect(() => {
     fetch(`${API}/api/v1/site-types`)
       .then((r) => {
         if (!r.ok) throw new Error('bad status');
@@ -244,9 +289,10 @@ function App() {
 
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return;
+    const initStyle = basemap === 'osm' ? osmStyle() : theme === 'light' ? LIGHT_STYLE : DARK_STYLE;
     const map = new maplibregl.Map({
       container: mapEl.current,
-      style: DARK_STYLE,
+      style: initStyle as unknown as string,
       center: GUJARAT_CENTER,
       zoom: 7,
       attributionControl: { compact: true },
@@ -280,8 +326,9 @@ function App() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.setStyle(basemap === 'dark' ? DARK_STYLE : osmStyle());
-  }, [basemap]);
+    const style = basemap === 'osm' ? osmStyle() : theme === 'light' ? LIGHT_STYLE : DARK_STYLE;
+    map.setStyle(style as unknown as string);
+  }, [basemap, theme]);
 
   // draw source sync
   useEffect(() => {
@@ -591,7 +638,7 @@ function App() {
   const canPin = !!coords && !!scoreData && compare.length < 3 && !compare.some((c) => Math.abs(c.coords.lat - (coords?.lat ?? 0)) < 1e-6 && Math.abs(c.coords.lng - (coords?.lng ?? 0)) < 1e-6);
 
   return (
-    <div className="atlas">
+    <div className="atlas" data-theme={theme}>
       <header className="commandbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">◈</span>
@@ -600,31 +647,33 @@ function App() {
             <strong>GeoReady</strong>
           </span>
         </div>
-        <span className="scope-badge">OBSIDIAN ATLAS · DEMO</span>
+        <span className="scope-badge">{theme === 'light' ? 'PAPER ATLAS · DEMO' : 'OBSIDIAN ATLAS · DEMO'}</span>
+        <button type="button" className="rail-toggle" onClick={() => setLeftCollapsed((v) => !v)} aria-label={leftCollapsed ? 'Show left panel' : 'Hide left panel'} aria-pressed={leftCollapsed} title={leftCollapsed ? 'Show sidebar' : 'Hide sidebar'}>
+          {leftCollapsed ? '→' : '←'}
+        </button>
+        {profile && <span className="scope-badge" style={{ background: 'var(--panel-2)', color: 'var(--ink)', borderColor: 'var(--line)' }}>{profile.label}</span>}
         <div className="spacer" />
         <div className="segmented" role="group" aria-label="Basemap style">
           <button type="button" aria-pressed={basemap === 'dark'} onClick={() => setBasemap('dark')}>
-            Obsidian
+            {theme === 'light' ? 'Paper' : 'Obsidian'}
           </button>
           <button type="button" aria-pressed={basemap === 'osm'} onClick={() => setBasemap('osm')}>
             OSM
           </button>
         </div>
-        <select className="profile-pick" aria-label="Site type profile" value={id} onChange={(e) => pick(e.target.value)}>
-          {profiles.length === 0 && <option value={id}>Loading profiles…</option>}
-          {profiles.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
+        <button type="button" className="theme-toggle" onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))} aria-label="Toggle theme">
+          {theme === 'dark' ? '☀ Light' : '◐ Obsidian'}
+        </button>
         <span className={`status-pill ${status === 'ready' ? 'ready' : status === 'error' ? 'error' : ''}`}>
           {status === 'loading' ? '● CONNECTING' : status === 'ready' ? '● LIVE' : '● OFFLINE'}
         </span>
+        <button type="button" className="rail-toggle" onClick={() => setRightCollapsed((v) => !v)} aria-label={rightCollapsed ? 'Show score panel' : 'Hide score panel'} aria-pressed={rightCollapsed} title={rightCollapsed ? 'Show score' : 'Hide score'}>
+          {rightCollapsed ? '←' : '→'}
+        </button>
       </header>
 
       <div className="atlas-main">
-        <aside className="rail" aria-label="Mission rail">
+        <aside className={`rail ${leftCollapsed ? 'collapsed' : ''}`} aria-label="Mission rail" aria-hidden={leftCollapsed}>
           <span className="eyebrow">MISSION</span>
           <h1>Pick a play.</h1>
           <p className="lede">{profile?.summary ?? 'Eleven Gujarat plays share one score engine and one map. Pick one to arm its factors.'}</p>
@@ -664,7 +713,7 @@ function App() {
           <div className="draw-bar">
             {!drawActive && !searchPoly && (
               <button type="button" className="btn primary" onClick={startDraw}>
-                ◈ Draw polygon
+                Draw polygon
               </button>
             )}
             {drawActive && (
@@ -765,37 +814,42 @@ function App() {
             ))}
           </div>
 
-          <h2>Weight studio · Σ must be 1.000</h2>
-          {profile && (
-            <div className="studio">
-              <div className="studio-head">
-                <strong>FACTOR</strong>
-                <span className={sumOk ? 'ok' : 'bad'}>Σ {sum.toFixed(3)} {sumOk ? '✓' : '— must be 1.000'}</span>
-              </div>
-              {profile.factors.map((f) => (
-                <div className="weight-row" key={f.id}>
-                  <div className="row-top">
-                    <span>{f.label}</span>
-                    <span>{((weights[f.id] ?? 0) * 100).toFixed(0)}%</span>
-                  </div>
-                  <input type="range" min={0} max={1} step={0.01} value={weights[f.id] ?? 0} onChange={(e) => updateWeight(f.id, Number(e.target.value))} aria-label={`${f.label} weight`} />
+          <button type="button" className="studio-toggle" onClick={() => setWeightsOpen((v) => !v)} aria-expanded={weightsOpen} aria-controls="studio-panel">
+            <span>Weight studio · Σ {sum.toFixed(3)} {sumOk ? '✓' : '— must be 1.000'}</span>
+            <span className="chev">⌃</span>
+          </button>
+          <div id="studio-panel" className={`studio-wrap ${weightsOpen ? '' : 'collapsed'}`}>
+            {profile && (
+              <div className="studio">
+                <div className="studio-head">
+                  <strong>FACTOR</strong>
+                  <span className={sumOk ? 'ok' : 'bad'}>{sumOk ? '✓ Balanced' : '— must be 1.000'}</span>
                 </div>
-              ))}
-              <div className="studio-actions">
-                <button type="button" className="btn ghost" onClick={normalize} disabled={sumOk}>
-                  Normalize → 1.0
-                </button>
-                <button type="button" className="btn ghost" onClick={reset}>
-                  Reset
-                </button>
-                <button type="button" className="btn primary" disabled={!coords || !sumOk || scoring} onClick={() => coords && doScore(coords.lat, coords.lng, weights, id, dirty && sumOk)}>
-                  {scoring ? 'Scoring…' : dirty ? 'Rescore →' : coords ? 'Score again' : 'Drop a pin first'}
-                </button>
+                {profile.factors.map((f) => (
+                  <div className="weight-row" key={f.id}>
+                    <div className="row-top">
+                      <span>{f.label}</span>
+                      <span>{((weights[f.id] ?? 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <input type="range" min={0} max={1} step={0.01} value={weights[f.id] ?? 0} onChange={(e) => updateWeight(f.id, Number(e.target.value))} aria-label={`${f.label} weight`} />
+                  </div>
+                ))}
+                <div className="studio-actions">
+                  <button type="button" className="btn ghost" onClick={normalize} disabled={sumOk}>
+                    Normalize → 1.0
+                  </button>
+                  <button type="button" className="btn ghost" onClick={reset}>
+                    Reset
+                  </button>
+                  <button type="button" className="btn primary" disabled={!coords || !sumOk || scoring} onClick={() => coords && doScore(coords.lat, coords.lng, weights, id, dirty && sumOk)}>
+                    {scoring ? 'Scoring…' : dirty ? 'Rescore →' : coords ? 'Score again' : 'Drop a pin first'}
+                  </button>
+                </div>
+                {!sumOk && <p className="lede" style={{ color: 'var(--ember)', fontSize: 11 }}>Weights must sum to 1.000 — normalize or adjust.</p>}
+                {dirty && sumOk && <p className="lede" style={{ fontSize: 11 }}>Custom weights will set score_config v2 for this run.</p>}
               </div>
-              {!sumOk && <p className="lede" style={{ color: 'var(--ember)', fontSize: 11 }}>Weights must sum to 1.000 — normalize or adjust.</p>}
-              {dirty && sumOk && <p className="lede" style={{ fontSize: 11 }}>Custom weights will set score_config v2 for this run.</p>}
-            </div>
-          )}
+            )}
+          </div>
 
           {err && <p className="note" style={{ borderColor: 'rgba(255,93,58,0.5)', background: 'rgba(255,93,58,0.08)' }}>{err}</p>}
           {coords && (
@@ -857,7 +911,7 @@ function App() {
           </div>
         </section>
 
-        <aside className="rail right" aria-label="Score observatory">
+        <aside className={`rail right ${rightCollapsed ? 'collapsed' : ''}`} aria-label="Score observatory" aria-hidden={rightCollapsed}>
           <span className="eyebrow">SCORE OBSERVATORY</span>
           <h1>Evidence first.</h1>
           <p className="lede">No black-box AI score. Every point traces to a versioned factor, layer, and rule. H3 cells are aggregation, not precise sites.</p>
@@ -865,7 +919,7 @@ function App() {
           <div className="orb-stage">
             <div className={orbClass(orbScore, orbElig, scoring)} role="status" aria-label={orbScore !== null ? `Score ${orbScore} out of 100` : 'Score placeholder'}>
               <div>
-                <strong>{scoring ? '…' : orbScore !== null ? orbScore.toFixed(1) : coords ? '—' : '···'}</strong>
+                <strong>{scoring ? '…' : scoreData ? animatedScore.toFixed(1) : coords ? '—' : '···'}</strong>
                 <br />
                 <span>/ 100</span>
               </div>
@@ -877,11 +931,11 @@ function App() {
             {scoreData && coords && (
               <>
                 <button type="button" className="btn primary" disabled={!canPin} onClick={pinCurrent} style={{ display: 'block', width: '100%', marginTop: 10 }}>
-                  {canPin ? '📌 Pin to compare' : compare.length >= 3 ? 'Compare full (3)' : 'Already pinned'}
+                  {canPin ? 'Pin to compare' : compare.length >= 3 ? 'Compare full (3)' : 'Already pinned'}
                 </button>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <button type="button" className="btn ghost" onClick={printReport} style={{ flex: 1 }}>
-                    🖨 Report
+                    Report
                   </button>
                   <button type="button" className="btn ghost" onClick={exportCsv} style={{ flex: 1 }}>
                     CSV
@@ -894,8 +948,8 @@ function App() {
           {scoreData ? (
             <>
               <div className="waterfall">
-                {scoreData.factors.map((f) => (
-                  <div className="waterfall-row" key={f.factor_id}>
+                {scoreData.factors.map((f, i) => (
+                  <div className="waterfall-row" key={f.factor_id} style={{ transitionDelay: `${i * 70}ms` }}>
                     <div className="wf-top">
                       <span>{f.label}</span>
                       <b>+{f.contribution.toFixed(1)}</b>
@@ -958,7 +1012,7 @@ function App() {
             <span>tap a card to fly · pin from the observatory · rings & polygon travel with export</span>
             <div className="spacer" />
             <button type="button" className="btn ghost" onClick={printReport}>
-              🖨 Report
+              Report
             </button>
             <button type="button" className="btn ghost" onClick={exportCompare}>
               JSON
