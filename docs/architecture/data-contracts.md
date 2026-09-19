@@ -94,6 +94,21 @@ Validation: factor IDs are unique; weights sum to 1.0 within `0.0001`; every met
 
 `score` is always between 0 and 100. `eligibility` is `eligible`, `capped`, `warning`, `ineligible`, or `insufficient_data`. An ineligible result must contain the triggering block constraint and must never be displayed as an unqualified recommendation.
 
+## Candidate score request (live scoring)
+
+```json
+{
+  "profile_id": "fmcg_retail",
+  "longitude": 72.57,
+  "latitude": 23.02,
+  "factor_values": {"demand": 0.8},
+  "weight_overrides": {"demand": 0.35, "access": 0.15, "competition": 0.20, "zoning": 0.15, "risk": 0.15},
+  "triggered_constraints": [{"id": "flood_zone", "effect": "warn", "message": "..."}]
+}
+```
+
+`weight_overrides` is optional. When present it must contain known factor ids in `[0,1]` and sum to `1.0` within `0.0001`; the server returns `score_config_version: 2` and `weight_source: "custom"` for traceability. Omit it for the default versioned weights. Mirrors the eleven Gujarat profiles (`fmcg_retail` … `solar_installation`).
+
 ## Analysis-run request
 
 ```json
