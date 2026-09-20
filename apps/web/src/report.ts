@@ -6,8 +6,8 @@ export type ReportSite = {
   eligibility: string;
   version: number;
   weight_source: string;
-  factors: { factor_id: string; label: string; weight: number; normalized_value: number; contribution: number; quality: string; unit: string }[];
-  constraints: { effect: string; message: string }[];
+  factors: { factor_id: string; label: string; weight: number; normalized_value: number; contribution: number; quality: string; unit: string; method?: string | null; layer_version_id?: string | null }[];
+  constraints: { effect: string; message: string; triggered?: boolean; layer_version_id?: string | null }[];
   generated_at: string;
 };
 
@@ -21,9 +21,10 @@ export function buildReportHtml(opts: {
   sites: ReportSite[];
   searchPoly: GeoJSON.Feature<GeoJSON.Polygon> | null;
   iso: Record<number, boolean>;
+  catchment?: { routed: boolean; provider: string } | null;
   generatedAt: string;
 }): string {
-  const { profile, profileLabel, sites, searchPoly, iso, generatedAt } = opts;
+  const { profile, profileLabel, sites, searchPoly, iso, catchment, generatedAt } = opts;
   const activeRings = [10, 20, 30].filter((m) => iso[m]);
   const leader = Math.max(...sites.map((s) => s.score));
   const wkt = searchPoly ? `POLYGON((${searchPoly.geometry.coordinates[0].map((c) => `${c[0].toFixed(5)} ${c[1].toFixed(5)}`).join(', ')}))` : '';
@@ -65,7 +66,7 @@ ${sites
     return `<div class="card ${isLeader ? 'leader' : ''}"><h2>${esc(s.label)}</h2><div class="muted">${s.coords.lat.toFixed(4)}, ${s.coords.lng.toFixed(4)} · v${s.version} · ${esc(s.weight_source)} weights</div>
 <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px"><span class="score">${s.score.toFixed(1)}<span style="font-size:12px;color:#5a6b69">/100</span></span><span class="pill" style="color:${eligCls};border-color:${eligCls}">${esc(s.eligibility.toUpperCase())}</span><span class="pill">${esc(badge)}</span></div>
 <table class="table"><thead><tr><th>Factor</th><th>Wt</th><th>Val</th><th>+Pts</th></tr></thead><tbody>
-${s.factors.map((f) => `<tr><td>${esc(f.label)}<div class="bar"><i style="width:${Math.round(f.normalized_value * 100)}%"></i></div></td><td>${(f.weight * 100).toFixed(0)}%</td><td>${f.normalized_value.toFixed(2)}</td><td><b>${f.contribution.toFixed(1)}</b></td></tr>`).join('')}
+${s.factors.map((f) => `<tr><td>${esc(f.label)}<div class="bar"><i style="width:${Math.round(f.normalized_value * 100)}%"></i></div>${f.method ? `<div class="muted">${esc(f.method)}${f.layer_version_id ? ` · lyr ${esc(f.layer_version_id.slice(0, 8))}` : ''}</div>` : ''}</td><td>${(f.weight * 100).toFixed(0)}%</td><td>${f.normalized_value.toFixed(2)}</td><td><b>${f.contribution.toFixed(1)}</b></td></tr>`).join('')}
 </tbody></table>
 ${s.constraints.length ? `<div style="margin-top:8px;font-size:11.5px">${s.constraints.map((c) => `<span class="pill" style="margin-right:6px">${esc(c.effect.toUpperCase())}: ${esc(c.message)}</span>`).join('')}</div>` : ''}
 </div>`;
@@ -74,7 +75,9 @@ ${s.constraints.length ? `<div style="margin-top:8px;font-size:11.5px">${s.const
 </div>
 ${
   activeRings.length
-    ? `<div class="meta"><h3>CATCHMENTS — DEMO CATCHMENT (geodesic, not routed)</h3>Geodesic circles at ~40 km/h drive proxy (metres internally): ${activeRings.map((m) => `${m} min · ~${(m * 0.667).toFixed(1)} km · ${m * 667} m`).join(' · ')}. Centered on each site’s pin; re-geodesed on move. Clearly labeled DEMO everywhere — replace with OSRM/Valhalla isochrones for planning use.</div>`
+    ? catchment?.routed
+      ? `<div class="meta"><h3>CATCHMENTS — ROUTED (${esc(catchment.provider)})</h3>Drive-time polygons at ${activeRings.map((m) => `${m} min`).join(' / ')} from each site’s pin; per-ring reachable population is in the exported JSON sibling.</div>`
+      : `<div class="meta"><h3>CATCHMENTS — DEMO CATCHMENT (geodesic, not routed)</h3>Geodesic circles at ~40 km/h drive proxy (metres internally): ${activeRings.map((m) => `${m} min · ~${(m * 0.667).toFixed(1)} km · ${m * 667} m`).join(' · ')}. Centered on each site’s pin; re-geodesed on move. Clearly labeled DEMO everywhere — replace with OSRM/Valhalla isochrones for planning use.</div>`
     : '<div class="meta"><h3>CATCHMENTS</h3>No demo catchments selected. Toggle 10/20/30 min in the atlas to add geodesic demo rings.</div>'
 }
 ${
@@ -110,7 +113,7 @@ export function openReport(html: string): void {
 }
 
 export function toCsv(sites: ReportSite[]): string {
-  const header = ['label', 'lat', 'lng', 'score', 'eligibility', 'version', 'weight_source', 'factor_id', 'factor_label', 'weight', 'normalized_value', 'contribution', 'quality', 'unit', 'generated_at'].join(',');
+  const header = ['label', 'lat', 'lng', 'score', 'eligibility', 'version', 'weight_source', 'factor_id', 'factor_label', 'weight', 'normalized_value', 'contribution', 'quality', 'unit', 'method', 'layer_version_id', 'generated_at'].join(',');
   const rows = sites.flatMap((s) =>
     s.factors.map((f) =>
       [
@@ -128,6 +131,8 @@ export function toCsv(sites: ReportSite[]): string {
         f.contribution.toFixed(2),
         f.quality,
         f.unit,
+        `"${(f.method ?? '').replace(/"/g, '""')}"`,
+        f.layer_version_id ?? '',
         s.generated_at,
       ].join(','),
     ),

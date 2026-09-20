@@ -65,11 +65,11 @@ export async function fetchHotspots(api: string, profileId: string): Promise<FC 
   } as unknown as FC;
 }
 
-export async function fetchH3(api: string, profileId: string): Promise<FC | null> {
+export async function fetchH3(api: string, profileId: string, bbox?: [number, number, number, number] | null): Promise<FC | null> {
   const d = await getJSON(
     api,
     '/api/v1/h3',
-    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile_id: profileId, resolution: 5 }) },
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profile_id: profileId, resolution: 5, ...(bbox ? { bbox } : {}) }) },
     60000,
   );
   if (!d || d.type !== 'FeatureCollection' || !Array.isArray(d.features)) return null;

@@ -21,6 +21,8 @@ type ScoreFactor = {
   weight: number;
   contribution: number;
   quality: string;
+  method?: string | null;
+  layer_version_id?: string | null;
 };
 type ScoreResponse = {
   score: number;
@@ -29,8 +31,8 @@ type ScoreResponse = {
   weight_source: string;
   persisted?: boolean;
   factors: ScoreFactor[];
-  constraints: { id: string; effect: string; message: string }[];
-  input_manifest: { study_area: string; notice: string; weights: Record<string, number> };
+  constraints: { id: string; effect: string; message: string; triggered?: boolean; layer_version_id?: string | null }[];
+  input_manifest: { study_area: string; notice: string; weights: Record<string, number>; layer_versions?: string[] };
   generated_at: string;
   analysis_run_id: string;
   candidate_id: string;
@@ -102,6 +104,12 @@ function initialProfile(): string {
 
 function styleKeyOf(b: Basemap, t: string): string {
   return b === 'osm' ? 'osm' : t === 'light' ? 'light' : 'dark';
+}
+
+function polyBbox(ring: [number, number][]): [number, number, number, number] {
+  const xs = ring.map((p) => p[0]);
+  const ys = ring.map((p) => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 
 function orbClass(score: number | null, eligibility: string, scoring: boolean): string {
@@ -393,15 +401,16 @@ function App() {
     return () => { live = false; };
   }, [catalogSeq]);
 
-  // server H3 per product (default weights; lens note in legend) — null keeps demo honeycomb
+  // server H3 per product, scoped to the drawn search polygon when present — null keeps demo honeycomb
   useEffect(() => {
     let live = true;
     (async () => {
-      const h3 = await fetchH3(API, id);
+      const bbox = searchPoly ? polyBbox(searchPoly.geometry.coordinates[0] as [number, number][]) : null;
+      const h3 = await fetchH3(API, id, bbox);
       if (live) setLiveH3(h3);
     })();
     return () => { live = false; };
-  }, [id]);
+  }, [id, searchPoly]);
 
   // server hotspots per product — null keeps demo-derived circles
   useEffect(() => {
@@ -818,6 +827,7 @@ function App() {
       })),
       searchPoly,
       iso,
+      catchment: serverIso ? { routed: serverIso.routed, provider: serverIso.provider } : null,
       generatedAt: new Date().toUTCString(),
     });
     openReport(html);
@@ -934,7 +944,7 @@ function App() {
                 <b>Drawing…</b> click to add vertices · double-click or Finish to close · Esc to cancel
               </>
             ) : searchPoly ? (
-              <>Polygon is the search boundary for this session (demo-only, not yet sent to scoring).</>
+              <>Polygon scopes server H3 suitability to its bbox; pin scoring still runs state-wide.</>
             ) : (
               <>Click Draw, then click the map to outline a custom area. Works at any zoom.</>
             )}
@@ -1200,6 +1210,12 @@ function App() {
                       <span>{f.quality}</span>
                       <span>{f.unit}</span>
                     </div>
+                    {(f.method || f.layer_version_id) && (
+                      <div className="wf-meta" title={f.layer_version_id ?? undefined}>
+                        {f.method ? <span>{f.method.length > 60 ? f.method.slice(0, 60) + '…' : f.method}</span> : null}
+                        {f.layer_version_id ? <span>lyr {f.layer_version_id.slice(0, 8)}</span> : null}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

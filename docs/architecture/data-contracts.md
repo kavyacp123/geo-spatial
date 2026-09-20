@@ -149,7 +149,7 @@ a score never 500s for provenance). New optional score fields: `candidate_id`,
 
 | Method + path | Purpose | Key validation |
 |---|---|---|
-| `POST /scores` | Score a pin (PostGIS factors → fallback demo) | profile known, weights Σ 1.0 ±0.0001, coords in range |
+| `POST /scores` | Score a pin (PostGIS factors → fallback demo) | profile known, weights Σ 1.0 ±0.0001, coords in range; constraints carry `triggered` + `layer_version_id`, `input_manifest` lists `layer_versions` |
 | `GET /layers` | Layer catalog with counts + extents | — |
 | `GET /layers/{id}/versions/{v}` | Version manifest + quality report | 404 unknown |
 | `GET /layers/{id}/features?bbox=&limit=` | Viewport GeoJSON (≤500) | bbox `minx,miny,maxx,maxy` |
@@ -158,7 +158,7 @@ a score never 500s for provenance). New optional score fields: `candidate_id`,
 | `POST /candidates`, `GET /candidates` | Persist / list candidate pins | inside study boundary (422) |
 | `GET /analysis-runs/{id}` | Run + its site_scores | 404 unknown |
 | `POST /hotspots` | sklearn DBSCAN (haversine) over profile-relevant POIs | profile known; 503 no DB; 501 no sklearn |
-| `POST /h3` | Real h3 cells (res 3–7, default 5) blended from layer aggregates, persisted to `analysis_cell` | 422 over cell cap 2000 / bad res |
+| `POST /h3` | Real h3 cells (res 3–7, default 5) blended from layer aggregates, persisted to `analysis_cell` | 422 over cell cap 2000 / bad res; optional `bbox` scopes cells (client sends the drawn search-polygon bbox) |
 | `POST /isochrone` | OSRM table-API drive rings + reachable population, geodesic fallback | minutes 1–120; always labeled `routed` bool + provider |
 | `POST /reports` | Assemble cross-run report from persisted site_scores | 404 on missing pair |
 

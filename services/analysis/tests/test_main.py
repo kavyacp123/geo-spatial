@@ -48,3 +48,12 @@ def test_flood_zone_warn_auto_triggered(monkeypatch):
  r=m.score(m.Request(profile_id='fmcg_retail',longitude=72.55,latitude=23.05))
  assert r['eligibility']=='warning'
  assert any(c['id']=='flood_zone' and c['effect']=='warn' for c in r['constraints'])
+ assert any(c['id']=='flood_zone' and c.get('layer_version_id')=='x' for c in r['constraints'])
+
+def test_score_contract_provenance_fields():
+  # additive per data-contracts.md: triggered + layer_version_id on constraints,
+  # layer_versions manifest listing factor sources (empty on pure-demo fallback)
+  r=score(Request(profile_id='fmcg_retail',longitude=72.57,latitude=23.02))
+  assert all(c.get('triggered') is True for c in r['constraints'])
+  assert r['input_manifest']['layer_versions']==[]
+  assert all('method' in f and 'layer_version_id' in f for f in r['factors'])

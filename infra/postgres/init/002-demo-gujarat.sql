@@ -1,4 +1,7 @@
 -- Demo seed for Gujarat — deterministic, idempotent, small and synthetic.
+-- NOTE: study_area.boundary is a bounding-box proxy (68.2,19.6,74.7,24.9), NOT the
+-- state polygon. Pins are containment-checked against this rectangle; replace with a
+-- simplified Gujarat polygon before statutory use (follow-up, needs owner data decision).
 -- Run via: docker compose up --build  (mounted to /docker-entrypoint-initdb.d)
 -- All geometries EPSG:4326, reproducible for judging without external APIs.
 INSERT INTO study_area (id, name, scope, boundary, distance_strategy)

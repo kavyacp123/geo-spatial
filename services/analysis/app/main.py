@@ -99,6 +99,7 @@ def score(r:Request):
     values=r.factor_values or {}; factors=[]; total=0.0
     db_warning = None
     risk_blocked = False
+    risk_lv = None
     for key,label,_ in base:
         w = eff[key]
         lv_id = None
@@ -119,6 +120,7 @@ def score(r:Request):
                     quality = 'postgis_layer'
                     if res.get('blocked'):
                         risk_blocked = True  # surfaced below as a warn constraint
+                        risk_lv = lv_id
                     # if factor_values forced, override
                     if key in values:
                         val_norm = float(values[key]); quality='provided_metric'
@@ -158,7 +160,15 @@ def score(r:Request):
     else:
         notice = 'Custom weights applied.' if r.weight_overrides else 'Synthetic location-sensitive demo factors (no validated layers loaded).'
     final_score = round(max(0,min(100,total)),2)
-    constraints_out = [c.model_dump() for c in triggered]
+    # contract shape per data-contracts.md: every constraint carries triggered +
+    # source layer_version_id (None when the client supplied it without provenance)
+    constraints_out = []
+    for c in triggered:
+        d = c.model_dump()
+        d['triggered'] = True
+        d['layer_version_id'] = risk_lv if c.id == 'flood_zone' else None
+        constraints_out.append(d)
+    layer_versions = sorted({f['layer_version_id'] for f in factors if f.get('layer_version_id')})
     # persist provenance when PostGIS is up; ephemeral UUIDs otherwise (never fail a score)
     persisted = False
     candidate_id, analysis_run_id = str(uuid4()), str(uuid4())
@@ -167,7 +177,7 @@ def score(r:Request):
         candidate_id, analysis_run_id, persisted = persist_score(
             r.profile_id, version, eff, constraints_out, r.candidate_id, cname,
             r.longitude, r.latitude, final_score, eligibility, factors)
-    return {'candidate_id':candidate_id,'analysis_run_id':analysis_run_id,'persisted':persisted,'profile_id':r.profile_id,'score':final_score,'eligibility':eligibility,'score_config_version':version,'weight_source': 'custom' if r.weight_overrides else 'default','factors':factors,'constraints':constraints_out,'input_manifest':{'study_area':'Gujarat','notice': notice,'weights': eff},'generated_at':datetime.now(timezone.utc).isoformat()}
+    return {'candidate_id':candidate_id,'analysis_run_id':analysis_run_id,'persisted':persisted,'profile_id':r.profile_id,'score':final_score,'eligibility':eligibility,'score_config_version':version,'weight_source': 'custom' if r.weight_overrides else 'default','factors':factors,'constraints':constraints_out,'input_manifest':{'study_area':'Gujarat','notice': notice,'weights': eff,'layer_versions': layer_versions},'generated_at':datetime.now(timezone.utc).isoformat()}
 
 class HotspotsIn(BaseModel):
     profile_id: str
